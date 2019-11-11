@@ -46,33 +46,39 @@ object App extends zio.App {
   }
   implicit val contra2: Contravariant[Depender] = new Contravariant[Depender] {
     def contramap[A, B](fa: Depender[A])(f: B => A): Depender[B] = new Depender[B] {
-      def y = fa.y.provideSome(f)
+      val y = fa.y.provideSome(f)
     }
   }
 
-  trait DependeeR {
-    def dependee: Dependee[Any]
+  object zioenv {
+
+    trait DependeeEnv {
+      def dependee: Dependee[Any]
+    }
+
+    trait DependerEnv {
+      def depender: Depender[Any]
+    }
+
+    object dependee extends Dependee[DependeeEnv] {
+      def x(y: String) = ZIO.accessM(_.dependee.x(y))
+    }
+
+    object depender extends Depender[DependerEnv] {
+      val y = ZIO.accessM(_.depender.y)
+    }
+
   }
 
-  trait DependerR {
-    def depender: Depender[Any]
-  }
-
-  object dependee extends Dependee[DependeeR] {
-    def x(y: String) = ZIO.accessM(_.dependee.x(y))
-  }
-
-  object depender extends Depender[DependerR] {
-    def y = ZIO.accessM(_.depender.y)
-  }
+  import example.App.zioenv._
 
   def run(args: List[String]) = {
     // cycle
-    object dependerImpl extends Depender[DependeeR] {
-      def y: URIO[DependeeR, String] = dependee.x("hello").map(_.toString)
+    object dependerImpl extends Depender[DependeeEnv] {
+      val y: URIO[DependeeEnv, String] = dependee.x("hello").map(_.toString)
     }
-    object dependeeImpl extends Dependee[DependerR] {
-      def x(y: String): URIO[DependerR, Int] = if (y == "hello") UIO(5) else depender.y.map(y.length + _.length)
+    object dependeeImpl extends Dependee[DependerEnv] {
+      def x(y: String): URIO[DependerEnv, Int] = if (y == "hello") UIO(5) else depender.y.map(y.length + _.length)
     }
     def fullfill[R: Tag : TraitConstructor, M[_] : TagK : Contravariant](m: M[R]): ProviderMagnet[M[Any]] = {
       TraitConstructor[R].provider.map(r => Contravariant[M].contramap(m)(_ => r))
@@ -82,9 +88,8 @@ object App extends zio.App {
       make[Depender[Any]].from(fullfill(dependerImpl))
       make[Dependee[Any]].from(fullfill(dependeeImpl))
     }
-
     Injector()
-      .produceF[Task](module, GCMode.NoGC).use(_ run TraitConstructor[DependeeR].provider.map {
+      .produceF[Task](module, GCMode.NoGC).use(_ run TraitConstructor[DependeeEnv].provider.map {
       (for {
         r <- dependee.x("zxc")
         _ <- Task(println(s"result: $r"))
